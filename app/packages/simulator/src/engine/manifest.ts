@@ -1,0 +1,364 @@
+// Parses a simulator YAML document into a typed Lab. It normalizes the two
+// flexible YAML forms — the scalar-or-sequence `command` path and the
+// scalar-or-mapping arg `Matcher` — into the canonical shapes the engine
+// matches against.
+
+import { parse as parseYaml } from "yaml";
+import {
+  Control,
+  InputRequest,
+  InputStep,
+  Lab,
+  Matcher,
+  SchemaVersion,
+  Scenario,
+  StateValue,
+  When,
+  Workflow,
+  WorkflowStep,
+} from "./types";
+
+/** Raised for malformed manifests, analogous to the Go parse/validate errors. */
+export class ManifestError extends Error {}
+
+/**
+ * Parse decodes simulator.yaml text into a Lab, normalizing the flexible
+ * matcher forms. It throws ManifestError on structural problems.
+ */
+export function parseManifest(text: string): Lab {
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (err) {
+    throw new ManifestError(`parse lab: ${(err as Error).message}`);
+  }
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError("parse lab: manifest is empty or not a mapping");
+  }
+
+  const doc = raw as Record<string, unknown>;
+  const version = typeof doc.version === "string" ? doc.version : "";
+
+  const scenariosRaw = doc.scenarios;
+  if (!Array.isArray(scenariosRaw)) {
+    throw new ManifestError("parse lab: `scenarios` must be a list");
+  }
+
+  const scenarios = scenariosRaw.map((s, i) => normalizeScenario(s, i));
+
+  return {
+    version,
+    metadata: doc.metadata as Lab["metadata"],
+    compatibility: doc.compatibility as Lab["compatibility"],
+    objectives: doc.objectives as string[] | undefined,
+    state: doc.state as Record<string, StateValue> | undefined,
+    settings: doc.settings as Lab["settings"],
+    defaults: doc.defaults as Lab["defaults"],
+    controls:
+      doc.controls !== undefined ? parseControls(doc.controls) : undefined,
+    workflows:
+      doc.workflows !== undefined ? parseWorkflows(doc.workflows) : undefined,
+    scenarios,
+  };
+}
+
+/**
+ * checkSchemaVersion reports whether a lab's declared schema version is
+ * compatible with this build. Any 2.x manifest is accepted (major must match).
+ */
+export function checkSchemaVersion(v: string): void {
+  if (!v) {
+    throw new ManifestError("simulator.yaml is missing a `version` field");
+  }
+  const major = v.split(".")[0];
+  const want = SchemaVersion.split(".")[0];
+  if (major !== want) {
+    throw new ManifestError(
+      `lab schema version "${v}" is incompatible with simulator schema "${SchemaVersion}"`,
+    );
+  }
+}
+
+function normalizeScenario(raw: unknown, index: number): Scenario {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(`scenario #${index} must be a mapping`);
+  }
+  const s = raw as Record<string, unknown>;
+  const id = typeof s.id === "string" ? s.id : `scenario-${index}`;
+  return {
+    id,
+    description: typeof s.description === "string" ? s.description : undefined,
+    completes: typeof s.completes === "string" ? s.completes : undefined,
+    when: normalizeWhen(s.when, id),
+    then: normalizeThen(s.then, id),
+  };
+}
+
+/**
+ * normalizeThen passes the effects block through unchanged except for `input`,
+ * whose two author forms (single-step sugar and an explicit `steps:` list) are
+ * normalized to the canonical `{ steps, then }` shape the engine consumes.
+ */
+function normalizeThen(raw: unknown, id: string): Scenario["then"] {
+  const then = ((raw as Scenario["then"]) ?? {}) as Scenario["then"];
+  if (then.input !== undefined) {
+    then.input = normalizeInput(then.input, id);
+  }
+  return then;
+}
+
+/**
+ * normalizeInput accepts either the single-step sugar (prompt/key/mask plus a
+ * `then` directly on the mapping) or the explicit `{ steps: [...], then }` form,
+ * and returns the canonical InputRequest. The resolution `then` is required so
+ * a request always has effects to apply once collected.
+ */
+function normalizeInput(raw: unknown, id: string): InputRequest {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(
+      `scenario "${id}": \`then.input\` must be a mapping`,
+    );
+  }
+  const obj = raw as Record<string, unknown>;
+
+  let steps: unknown;
+  if (obj.steps !== undefined) {
+    if (!Array.isArray(obj.steps)) {
+      throw new ManifestError(
+        `scenario "${id}": \`then.input.steps\` must be a list`,
+      );
+    }
+    steps = obj.steps;
+  } else {
+    // Single-step sugar: the step fields sit directly on `then.input`.
+    steps = [{ key: obj.key, prompt: obj.prompt, mask: obj.mask }];
+  }
+
+  const normalized = (steps as unknown[]).map((s, i) =>
+    normalizeInputStep(s, id, i),
+  );
+  if (normalized.length === 0) {
+    throw new ManifestError(
+      `scenario "${id}": \`then.input\` declares no steps`,
+    );
+  }
+
+  const then = normalizeThen(obj.then, id);
+  return { steps: normalized, then };
+}
+
+function normalizeInputStep(
+  raw: unknown,
+  id: string,
+  index: number,
+): InputStep {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(
+      `scenario "${id}": \`then.input\` step #${index} must be a mapping`,
+    );
+  }
+  const s = raw as Record<string, unknown>;
+  const key = typeof s.key === "string" ? s.key : "";
+  if (!key) {
+    throw new ManifestError(
+      `scenario "${id}": \`then.input\` step #${index} is missing \`key\``,
+    );
+  }
+  const prompt = typeof s.prompt === "string" ? s.prompt : "";
+  if (!prompt) {
+    throw new ManifestError(
+      `scenario "${id}": \`then.input\` step "${key}" is missing \`prompt\``,
+    );
+  }
+  return { key, prompt, mask: s.mask === true };
+}
+
+function normalizeWhen(raw: unknown, id: string): When {
+  if (raw === undefined || raw === null) {
+    return {};
+  }
+  if (typeof raw !== "object") {
+    throw new ManifestError(`scenario "${id}": \`when\` must be a mapping`);
+  }
+  const w = raw as Record<string, unknown>;
+
+  const when: When = {};
+  if (w.command !== undefined) {
+    when.command = normalizeCommandPath(w.command, id);
+  }
+  if (w.args !== undefined) {
+    when.args = normalizeArgs(w.args, id);
+  }
+  if (w.agent !== undefined) {
+    when.agent = Boolean(w.agent);
+  }
+  if (w.prompt !== undefined) {
+    when.prompt = String(w.prompt);
+  }
+  if (w.promptContains !== undefined) {
+    when.promptContains = (w.promptContains as unknown[]).map(String);
+  }
+  if (w.state !== undefined) {
+    when.state = w.state as Record<string, StateValue>;
+  }
+  if (w.terminal !== undefined) {
+    when.terminal = String(w.terminal);
+  }
+  return when;
+}
+
+/**
+ * normalizeCommandPath accepts a space-joined scalar ("policy allow network")
+ * or a sequence ([policy, allow, network]); both become the same token list.
+ */
+function normalizeCommandPath(raw: unknown, id: string): string[] {
+  if (typeof raw === "string") {
+    return raw.split(/\s+/).filter((t) => t.length > 0);
+  }
+  if (Array.isArray(raw)) {
+    return raw.map(String);
+  }
+  throw new ManifestError(
+    `scenario "${id}": \`command\` must be a string or list`,
+  );
+}
+
+function normalizeArgs(raw: unknown, id: string): Record<string, Matcher> {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(`scenario "${id}": \`args\` must be a mapping`);
+  }
+  const out: Record<string, Matcher> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    out[name] = normalizeMatcher(value, id, name);
+  }
+  return out;
+}
+
+/**
+ * normalizeMatcher decodes the scalar and mapping matcher forms:
+ *   name: "web"           -> equals
+ *   publish: true         -> present
+ *   detach: false         -> absent
+ *   region: { any: true } -> any
+ *   count: { oneOf: [..] }-> oneOf
+ */
+function normalizeMatcher(raw: unknown, id: string, name: string): Matcher {
+  if (typeof raw === "boolean") {
+    return { kind: raw ? "present" : "absent" };
+  }
+  if (
+    typeof raw === "string" ||
+    typeof raw === "number" ||
+    typeof raw === "bigint"
+  ) {
+    return { kind: "equals", value: String(raw) };
+  }
+  if (raw !== null && typeof raw === "object") {
+    const obj = raw as { any?: unknown; oneOf?: unknown };
+    if (obj.any === true) {
+      return { kind: "any" };
+    }
+    if (Array.isArray(obj.oneOf) && obj.oneOf.length > 0) {
+      return { kind: "oneOf", oneOf: obj.oneOf.map(String) };
+    }
+    throw new ManifestError(
+      `scenario "${id}" arg "${name}": matcher must set \`any: true\` or a non-empty \`oneOf\``,
+    );
+  }
+  throw new ManifestError(
+    `scenario "${id}" arg "${name}": matcher must be a scalar or mapping`,
+  );
+}
+
+function parseControls(raw: unknown): Control[] {
+  if (!Array.isArray(raw)) {
+    throw new ManifestError("`controls` must be a list");
+  }
+  return raw.map((c, i) => parseControl(c, i));
+}
+
+function parseControl(raw: unknown, index: number): Control {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(`control #${index} must be a mapping`);
+  }
+  const c = raw as Record<string, unknown>;
+  const id = typeof c.id === "string" && c.id ? c.id : `control-${index}`;
+  const label = typeof c.label === "string" ? c.label : "";
+  if (!label) {
+    throw new ManifestError(`control "${id}": \`label\` is required`);
+  }
+  const statePath = typeof c.state === "string" ? c.state : "";
+  if (!statePath) {
+    throw new ManifestError(`control "${id}": \`state\` is required`);
+  }
+  return {
+    id,
+    label,
+    description: typeof c.description === "string" ? c.description : undefined,
+    state: statePath,
+    enabled: c.enabled !== undefined ? (c.enabled as StateValue) : true,
+    disabled: c.disabled !== undefined ? (c.disabled as StateValue) : false,
+  };
+}
+
+function parseWorkflows(raw: unknown): Workflow[] {
+  if (!Array.isArray(raw)) {
+    throw new ManifestError("`workflows` must be a list");
+  }
+  return raw.map((w, i) => parseWorkflow(w, i));
+}
+
+function parseWorkflow(raw: unknown, index: number): Workflow {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(`workflow #${index} must be a mapping`);
+  }
+  const w = raw as Record<string, unknown>;
+  const id = typeof w.id === "string" && w.id ? w.id : "";
+  if (!id) {
+    throw new ManifestError(`workflow #${index}: \`id\` is required`);
+  }
+  const name = typeof w.name === "string" && w.name ? w.name : id;
+  if (w.steps !== undefined && !Array.isArray(w.steps)) {
+    throw new ManifestError(`workflow "${id}": \`steps\` must be a list`);
+  }
+  const steps = Array.isArray(w.steps)
+    ? w.steps.map((s, i) => parseWorkflowStep(s, id, i))
+    : [];
+  return {
+    id,
+    name,
+    on: typeof w.on === "string" ? w.on : undefined,
+    steps,
+  };
+}
+
+function parseWorkflowStep(
+  raw: unknown,
+  workflowId: string,
+  index: number,
+): WorkflowStep {
+  if (raw === null || typeof raw !== "object") {
+    throw new ManifestError(
+      `workflow "${workflowId}" step #${index} must be a mapping`,
+    );
+  }
+  const s = raw as Record<string, unknown>;
+  const id = typeof s.id === "string" && s.id ? s.id : `step-${index}`;
+  const name = typeof s.name === "string" && s.name ? s.name : id;
+  const logs = Array.isArray(s.logs) ? s.logs.map(String) : undefined;
+  const requires =
+    typeof s.requires === "string" && s.requires ? s.requires : undefined;
+  const failure = parseWorkflowStepFailure(s.failure);
+  return { id, name, logs, requires, failure };
+}
+
+function parseWorkflowStepFailure(
+  raw: unknown,
+): WorkflowStep["failure"] | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const f = raw as Record<string, unknown>;
+  const error = typeof f.error === "string" ? f.error : undefined;
+  const logs = Array.isArray(f.logs) ? f.logs.map(String) : undefined;
+  if (error === undefined && logs === undefined) return undefined;
+  return { error, logs };
+}

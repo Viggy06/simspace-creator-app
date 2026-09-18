@@ -1,0 +1,55 @@
+import { useActiveSection } from "../../context/WorkshopContext.jsx";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer.jsx";
+import { WorkshopHeader } from "./WorkshopHeader.jsx";
+import { WorkshopFooter } from "./WorkshopFooter.jsx";
+import { SectionMilestones } from "./SectionMilestones.jsx";
+// The icon font. Imported from JS, not `@use`'d from the SCSS: `@use` inlines the
+// rules into the importing stylesheet, and sass does not rewrite the relative
+// `url()` inside them — so the compiled CSS would look for the font beside
+// itself instead of beside icons.css, and every icon would silently 404.
+import "../../styles/icons.scss";
+import "./WorkshopPanel.scss";
+
+// The instructions pane: header, the rendered section, and the footer nav.
+//
+// `brand` and `menuItems` are the host's, and are passed straight through to the
+// header (see WorkshopHeader for their shape). `components` registers extra
+// markdown directives — the same seam the deck uses. `theme` is "light",
+// "dark", or "auto" (the default: follow the reader's system preference).
+export function WorkshopPanel({
+  brand,
+  menuItems,
+  components,
+  theme = "auto",
+  showReset = true,
+}) {
+  const { activeSection } = useActiveSection();
+
+  return (
+    <div
+      className="workshop-panel"
+      data-labspace-theme={theme === "auto" ? undefined : theme}
+    >
+      <WorkshopHeader
+        brand={brand}
+        menuItems={menuItems}
+        showReset={showReset}
+      />
+
+      <div className="workshop-scroll">
+        <div className="workshop-body">
+          <SectionMilestones />
+          <MarkdownRenderer
+            key={`section-${activeSection.id}`}
+            baseUrl={activeSection.baseUrl}
+            components={components}
+          >
+            {activeSection.content}
+          </MarkdownRenderer>
+        </div>
+      </div>
+
+      <WorkshopFooter />
+    </div>
+  );
+}

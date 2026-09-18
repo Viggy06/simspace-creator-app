@@ -1,0 +1,120 @@
+title: "A Tour of Docker (Simulated)"
+description: "The Docker CLI, Docker Scout, Docker Sandboxes, and CI — every command scripted and run in your browser."
+
+# Catalog card metadata for the landing page (labs.json is generated from this).
+# `title` overrides the card label without changing the in-lab header above.
+catalog:
+  title: "A Tour of Docker"
+  icon: sailing
+  tags: ["docker", "applied example"]
+  estimatedMinutes: 30
+  order: 2
+
+# Version string. Progress is stored per lab and per version, so bumping this
+# when you add or rename steps invalidates stale completion records.
+version: "1.0.0"
+
+# Presence + analytics tracking is configured ONCE per deployment in the app's
+# config.json (the pulse endpoint), so this lab is tracked automatically — no
+# `tracking:` block needed here. In-lab it only surfaces LIVE presence;
+# cumulative data lives in the instructor dashboard (#/labs/tour-of-docker/insights).
+# Opt this lab out with `tracking: false`; tweak it with `tracking: { presence: false }`.
+
+# Path to the simulator scenario spec (relative to this file). All terminals
+# below share this one spec, and one shared state + filesystem.
+simulator: simulator.yaml
+
+# Two terminal tabs, both backed by the shared simulator above. The Sandbox tab
+# is where the agent session runs (scenarios scope to it with `when.terminal`).
+# Code blocks target a tab with `terminal-id=<id>`; the first is the default.
+terminals:
+  - id: host
+    title: Host
+    icon: dns
+  - id: sandbox
+    title: Sandbox
+    icon: smart_toy
+
+# Enable the mock CI tab in the right-hand pane. Scenarios trigger workflow runs
+# with `then.ci` (see simulator.yaml); runs render in this tab.
+features:
+  ci:
+    title: CI
+    icon: rocket_launch
+
+# Seed files for the virtual filesystem — a tiny Node/Express project used by
+# the Scout, Sandbox, and CI sections. Built-in `ls`/`cat` reflect these.
+files:
+  Dockerfile: |
+    FROM node:20-alpine
+    WORKDIR /app
+    COPY package.json package-lock.json ./
+    RUN npm ci --omit=dev
+    COPY . .
+    EXPOSE 3000
+    CMD ["node", "server.js"]
+  package.json: |
+    {
+      "name": "scout-demo",
+      "version": "1.0.0",
+      "private": true,
+      "dependencies": {
+        "express": "^4.17.1"
+      }
+    }
+  server.js: |
+    const express = require("express");
+    const app = express();
+
+    app.get("/", (_, res) => res.send("Hello from the lab!"));
+
+    app.listen(3000, () => console.log("listening on :3000"));
+  compose.yaml: |
+    services:
+      web:
+        build: .
+        ports:
+          - "3000:3000"
+      redis:
+        image: redis:7-alpine
+
+sections:
+  - title: Introduction
+    contentPath: 00-intro.md
+  - title: The Docker CLI
+    contentPath: 01-docker.md
+    # Progress checkpoints for this section. Each `id` is referenced by a
+    # scenario's `completes:` in simulator.yaml; when that scenario fires, the
+    # step is marked done (a check-mark in the section nav). Fully optional —
+    # omit `steps:` and the section tracks no progress.
+    steps:
+      - id: run-container
+        title: "Run a container"
+      - id: stop-container
+        title: "Stop the container"
+      - id: remove-container
+        title: "Remove the container"
+  - title: Find and fix a CVE with Scout
+    contentPath: 02-scout.md
+    steps:
+      - id: scan-for-cves
+        title: "Scan the image for CVEs"
+      - id: patch-the-dependency
+        title: "Upgrade the vulnerable dependency"
+      - id: rebuild-image
+        title: "Rebuild the fixed image"
+  - title: Run an agent in a Sandbox
+    contentPath: 03-sandbox.md
+    steps:
+      - id: start-sandbox
+        title: "Start the sandboxed agent"
+      - id: edit-with-agent
+        title: "Have the agent add a /health endpoint"
+  - title: Build and sign in CI
+    contentPath: 04-ci.md
+    steps:
+      - id: trigger-ci
+        title: "Push to trigger the pipeline"
+
+variables:
+  containerName: web

@@ -1,0 +1,130 @@
+/* MockTerminal styling. A dark, monospaced terminal surface. The surrounding
+   frame (tab bar, border, rounding) is owned by the TerminalPanel, so the
+   terminal itself fills its container edge-to-edge. Colors are applied per line
+   kind (the CLI uses ANSI; here we use classes). */
+
+.mock-term {
+  --term-bg: #0d1117;
+  --term-fg: #d1d5da;
+  --term-dim: #6e7681;
+  --term-blue: #4fc3f7;
+  --term-yellow: #e3b341;
+  --term-green: #7ee787;
+  --term-red: #ff7b72;
+  --term-agent: #a5d6ff;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  overflow: hidden;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  /* Size is a consumer-settable property with the terminal's own default, because
+     one surface can't be served by a fixed px: a deck slide's type scale is a
+     percentage of the slide's width, so a hardcoded 13.5px renders correctly on a
+     1920px slide and ~3x oversized on a phone. Every other consumer (the lab pane,
+     a docs page, the popped-out terminal window) inherits nothing and gets the
+     default, so this changes no existing surface. */
+  font-size: var(--mock-term-fs, 13.5px);
+  line-height: 1.5;
+}
+
+.mock-term-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--mock-term-pad, 12px 14px);
+  cursor: text;
+}
+
+.term-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.term-stdout {
+  color: var(--term-fg);
+}
+.term-stderr {
+  color: var(--term-red);
+}
+.term-input {
+  color: var(--term-fg);
+}
+.term-inputrow {
+  display: flex;
+  align-items: baseline;
+}
+.term-prompt {
+  color: var(--term-green);
+  white-space: pre;
+  flex-shrink: 0;
+}
+.term-line.term-input {
+  color: var(--term-fg);
+}
+
+.term-agent {
+  color: var(--term-agent);
+}
+.term-system {
+  color: var(--term-dim);
+}
+.term-think {
+  color: var(--term-yellow);
+}
+.term-whale {
+  color: var(--term-blue);
+}
+.term-title {
+  color: var(--term-fg);
+  font-weight: 700;
+}
+.term-warn {
+  color: var(--term-yellow);
+}
+.term-dim {
+  color: var(--term-dim);
+}
+
+.mock-term input.term-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  font: inherit;
+  color: var(--term-fg);
+  padding: 0;
+  margin: 0;
+  caret-color: var(--term-green);
+}
+
+/* The focus appearance, held against the host page.
+ *
+ * A site that styles its own forms writes `input:focus` — specificity (0,1,1),
+ * which outranks a bare `.term-input` (0,1,0). Its ring then paints around an
+ * input that is stretched across the full width of the terminal, so the whole
+ * command row gets boxed in the host's accent colour. That shipped, and it looks
+ * like the terminal is broken rather than like a stylesheet collision.
+ *
+ * Matching the element as well as the class, inside .mock-term, is (0,2,2) —
+ * past any reasonable global rule, and still overridable by a host that really
+ * means it, which `!important` would not be.
+ *
+ * Removing the ring is right HERE specifically because this is a text field:
+ * the green caret already shows where focus is. Buttons elsewhere in the
+ * runtime keep their focus rings. */
+.mock-term input.term-input:focus,
+.mock-term input.term-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: transparent;
+}
+
+.mock-term-error .term-stderr {
+  padding: 14px;
+}
