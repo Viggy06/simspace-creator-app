@@ -32,6 +32,11 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Disable Pulse tracking
+        working-directory: app
+        run: |
+        rm -f public/config.json
+
       - name: Build app
         working-directory: app
         run: npm run build
